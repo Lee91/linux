@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/drivers/char/raw.c
  *
@@ -24,7 +25,7 @@
 #include <linux/compat.h>
 #include <linux/vmalloc.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 struct raw_device_data {
 	struct block_device *binding;
@@ -36,7 +37,7 @@ static struct raw_device_data *raw_devices;
 static DEFINE_MUTEX(raw_mutex);
 static const struct file_operations raw_ctl_fops; /* forward declaration */
 
-static int max_raw_minors = MAX_RAW_MINORS;
+static int max_raw_minors = CONFIG_MAX_RAW_DEVS;
 
 module_param(max_raw_minors, int, 0);
 MODULE_PARM_DESC(max_raw_minors, "Maximum number of raw devices (1-65536)");
@@ -316,12 +317,13 @@ static int __init raw_init(void)
 	int ret;
 
 	if (max_raw_minors < 1 || max_raw_minors > 65536) {
-		printk(KERN_WARNING "raw: invalid max_raw_minors (must be"
-			" between 1 and 65536), using %d\n", MAX_RAW_MINORS);
-		max_raw_minors = MAX_RAW_MINORS;
+		pr_warn("raw: invalid max_raw_minors (must be between 1 and 65536), using %d\n",
+			CONFIG_MAX_RAW_DEVS);
+		max_raw_minors = CONFIG_MAX_RAW_DEVS;
 	}
 
-	raw_devices = vzalloc(sizeof(struct raw_device_data) * max_raw_minors);
+	raw_devices = vzalloc(array_size(max_raw_minors,
+					 sizeof(struct raw_device_data)));
 	if (!raw_devices) {
 		printk(KERN_ERR "Not enough memory for raw device structures\n");
 		ret = -ENOMEM;
@@ -334,10 +336,8 @@ static int __init raw_init(void)
 
 	cdev_init(&raw_cdev, &raw_fops);
 	ret = cdev_add(&raw_cdev, dev, max_raw_minors);
-	if (ret) {
+	if (ret)
 		goto error_region;
-	}
-
 	raw_class = class_create(THIS_MODULE, "raw");
 	if (IS_ERR(raw_class)) {
 		printk(KERN_ERR "Error creating raw class.\n");

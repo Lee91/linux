@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Intel MIC Platform Software Stack (MPSS)
  *
  * Copyright(c) 2013 Intel Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * The full GNU General Public License is included in this distribution in
- * the file called "COPYING".
- *
  * Intel MIC Host driver.
- *
  */
 #include <linux/fs.h>
 #include <linux/pci.h>
@@ -28,6 +16,15 @@
 #include "mic_device.h"
 #include "mic_x100.h"
 #include "mic_smpt.h"
+
+static const u16 mic_x100_intr_init[] = {
+		MIC_X100_DOORBELL_IDX_START,
+		MIC_X100_DMA_IDX_START,
+		MIC_X100_ERR_IDX_START,
+		MIC_X100_NUM_DOORBELL,
+		MIC_X100_NUM_DMA,
+		MIC_X100_NUM_ERR,
+};
 
 /**
  * mic_x100_write_spad - write to the scratchpad register
@@ -124,6 +121,7 @@ static void mic_x100_disable_interrupts(struct mic_device *mdev)
 /**
  * mic_x100_send_sbox_intr - Send an MIC_X100_SBOX interrupt to MIC.
  * @mdev: pointer to mic_device instance
+ * @doorbell: doorbell number
  */
 static void mic_x100_send_sbox_intr(struct mic_device *mdev,
 				    int doorbell)
@@ -145,6 +143,7 @@ static void mic_x100_send_sbox_intr(struct mic_device *mdev,
 /**
  * mic_x100_send_rdmasr_intr - Send an RDMASR interrupt to MIC.
  * @mdev: pointer to mic_device instance
+ * @doorbell: doorbell number
  */
 static void mic_x100_send_rdmasr_intr(struct mic_device *mdev,
 				      int doorbell)
@@ -362,10 +361,10 @@ mic_x100_load_command_line(struct mic_device *mdev, const struct firmware *fw)
 	if (!buf)
 		return -ENOMEM;
 
-	len += snprintf(buf, CMDLINE_SIZE - len,
+	len += scnprintf(buf, CMDLINE_SIZE - len,
 		" mem=%dM", boot_mem);
 	if (mdev->cosm_dev->cmdline)
-		snprintf(buf + len, CMDLINE_SIZE - len, " %s",
+		scnprintf(buf + len, CMDLINE_SIZE - len, " %s",
 			 mdev->cosm_dev->cmdline);
 	memcpy_toio(cmd_line_va, buf, strlen(buf) + 1);
 	kfree(buf);
@@ -450,26 +449,29 @@ mic_x100_load_firmware(struct mic_device *mdev, const char *buf)
 
 	rc = mic_x100_get_boot_addr(mdev);
 	if (rc)
-		goto error;
+		return rc;
 	/* load OS */
 	rc = request_firmware(&fw, mdev->cosm_dev->firmware, &mdev->pdev->dev);
 	if (rc < 0) {
 		dev_err(&mdev->pdev->dev,
 			"ramdisk request_firmware failed: %d %s\n",
 			rc, mdev->cosm_dev->firmware);
-		goto error;
+		return rc;
 	}
 	if (mdev->bootaddr > mdev->aper.len - fw->size) {
 		rc = -EINVAL;
 		dev_err(&mdev->pdev->dev, "%s %d rc %d bootaddr 0x%x\n",
 			__func__, __LINE__, rc, mdev->bootaddr);
-		release_firmware(fw);
 		goto error;
 	}
 	memcpy_toio(mdev->aper.va + mdev->bootaddr, fw->data, fw->size);
 	mdev->ops->write_spad(mdev, MIC_X100_FW_SIZE, fw->size);
-	if (!strcmp(mdev->cosm_dev->bootmode, "flash"))
-		goto done;
+	if (!strcmp(mdev->cosm_dev->bootmode, "flash")) {
+		rc = -EINVAL;
+		dev_err(&mdev->pdev->dev, "%s %d rc %d\n",
+			__func__, __LINE__, rc);
+		goto error;
+	}
 	/* load command line */
 	rc = mic_x100_load_command_line(mdev, fw);
 	if (rc) {
@@ -481,9 +483,11 @@ mic_x100_load_firmware(struct mic_device *mdev, const char *buf)
 	/* load ramdisk */
 	if (mdev->cosm_dev->ramdisk)
 		rc = mic_x100_load_ramdisk(mdev);
+
+	return rc;
+
 error:
-	dev_dbg(&mdev->pdev->dev, "%s %d rc %d\n", __func__, __LINE__, rc);
-done:
+	release_firmware(fw);
 	return rc;
 }
 
@@ -501,6 +505,8 @@ static u32 mic_x100_get_postcode(struct mic_device *mdev)
 /**
  * mic_x100_smpt_set - Update an SMPT entry with a DMA address.
  * @mdev: pointer to mic_device instance
+ * @dma_addr: DMA address to use
+ * @index: entry to write to
  *
  * RETURNS: none.
  */

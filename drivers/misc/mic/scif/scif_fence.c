@@ -1,25 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Intel MIC Platform Software Stack (MPSS)
  *
  * Copyright(c) 2015 Intel Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
  * Intel SCIF driver.
- *
  */
 
 #include "scif_main.h"
 
 /**
  * scif_recv_mark: Handle SCIF_MARK request
+ * @scifdev:	SCIF device
  * @msg:	Interrupt message
  *
  * The peer has requested a mark.
@@ -27,7 +19,8 @@
 void scif_recv_mark(struct scif_dev *scifdev, struct scifmsg *msg)
 {
 	struct scif_endpt *ep = (struct scif_endpt *)msg->payload[0];
-	int mark, err;
+	int mark = 0;
+	int err;
 
 	err = _scif_fence_mark(ep, &mark);
 	if (err)
@@ -41,6 +34,7 @@ void scif_recv_mark(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_mark_resp: Handle SCIF_MARK_(N)ACK messages.
+ * @scifdev:	SCIF device
  * @msg:	Interrupt message
  *
  * The peer has responded to a SCIF_MARK message.
@@ -64,6 +58,7 @@ void scif_recv_mark_resp(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_wait: Handle SCIF_WAIT request
+ * @scifdev:	SCIF device
  * @msg:	Interrupt message
  *
  * The peer has requested waiting on a fence.
@@ -101,6 +96,7 @@ void scif_recv_wait(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_wait_resp: Handle SCIF_WAIT_(N)ACK messages.
+ * @scifdev:	SCIF device
  * @msg:	Interrupt message
  *
  * The peer has responded to a SCIF_WAIT message.
@@ -122,6 +118,7 @@ void scif_recv_wait_resp(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_sig_local: Handle SCIF_SIG_LOCAL request
+ * @scifdev:	SCIF device
  * @msg:	Interrupt message
  *
  * The peer has requested a signal on a local offset.
@@ -143,6 +140,7 @@ void scif_recv_sig_local(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_sig_remote: Handle SCIF_SIGNAL_REMOTE request
+ * @scifdev:	SCIF device
  * @msg:	Interrupt message
  *
  * The peer has requested a signal on a remote offset.
@@ -164,6 +162,7 @@ void scif_recv_sig_remote(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_sig_resp: Handle SCIF_SIG_(N)ACK messages.
+ * @scifdev:	SCIF device
  * @msg:	Interrupt message
  *
  * The peer has responded to a signal request.
@@ -194,10 +193,11 @@ static inline void *scif_get_local_va(off_t off, struct scif_window *window)
 
 static void scif_prog_signal_cb(void *arg)
 {
-	struct scif_status *status = arg;
+	struct scif_cb_arg *cb_arg = arg;
 
-	dma_pool_free(status->ep->remote_dev->signal_pool, status,
-		      status->src_dma_addr);
+	dma_pool_free(cb_arg->ep->remote_dev->signal_pool, cb_arg->status,
+		      cb_arg->src_dma_addr);
+	kfree(cb_arg);
 }
 
 static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
@@ -208,6 +208,7 @@ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
 	bool x100 = !is_dma_copy_aligned(chan->device, 1, 1, 1);
 	struct dma_async_tx_descriptor *tx;
 	struct scif_status *status = NULL;
+	struct scif_cb_arg *cb_arg = NULL;
 	dma_addr_t src;
 	dma_cookie_t cookie;
 	int err;
@@ -256,8 +257,16 @@ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
 		goto dma_fail;
 	}
 	if (!x100) {
+		cb_arg = kmalloc(sizeof(*cb_arg), GFP_KERNEL);
+		if (!cb_arg) {
+			err = -ENOMEM;
+			goto dma_fail;
+		}
+		cb_arg->src_dma_addr = src;
+		cb_arg->status = status;
+		cb_arg->ep = ep;
 		tx->callback = scif_prog_signal_cb;
-		tx->callback_param = status;
+		tx->callback_param = cb_arg;
 	}
 	cookie = tx->tx_submit(tx);
 	if (dma_submit_error(cookie)) {
@@ -269,19 +278,21 @@ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
 	dma_async_issue_pending(chan);
 	return 0;
 dma_fail:
-	if (!x100)
+	if (!x100) {
 		dma_pool_free(ep->remote_dev->signal_pool, status,
-			      status->src_dma_addr);
+			      src - offsetof(struct scif_status, val));
+		kfree(cb_arg);
+	}
 alloc_fail:
 	return err;
 }
 
-/*
+/**
  * scif_prog_signal:
- * @epd - Endpoint Descriptor
- * @offset - registered address to write @val to
- * @val - Value to be written at @offset
- * @type - Type of the window.
+ * @epd: Endpoint Descriptor
+ * @offset: registered address to write @val to
+ * @val: Value to be written at @offset
+ * @type: Type of the window.
  *
  * Arrange to write a value to the registered offset after ensuring that the
  * offset provided is indeed valid.
@@ -497,12 +508,12 @@ retry:
 
 /**
  * scif_send_fence_signal:
- * @epd - endpoint descriptor
- * @loff - local offset
- * @lval - local value to write to loffset
- * @roff - remote offset
- * @rval - remote value to write to roffset
- * @flags - flags
+ * @epd: endpoint descriptor
+ * @loff: local offset
+ * @lval: local value to write to loffset
+ * @roff: remote offset
+ * @rval: remote value to write to roffset
+ * @flags: flags
  *
  * Sends a remote fence signal request
  */
@@ -573,10 +584,11 @@ static void scif_fence_mark_cb(void *arg)
 	atomic_dec(&ep->rma_info.fence_refcount);
 }
 
-/*
+/**
  * _scif_fence_mark:
+ * @epd: endpoint descriptor
+ * @mark: DMA mark to set-up
  *
- * @epd - endpoint descriptor
  * Set up a mark for this endpoint and return the value of the mark.
  */
 int _scif_fence_mark(scif_epd_t epd, int *mark)

@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 1999 - 2010 Intel Corporation.
  * Copyright (C) 2010 OKI SEMICONDUCTOR Co., LTD.
  *
  * This code was derived from the Intel e1000e Linux driver.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "pch_gbe.h"
@@ -421,7 +410,7 @@ static void pch_gbe_check_copper_options(struct pch_gbe_adapter *adapter)
 	case SPEED_1000 + HALF_DUPLEX:
 		netdev_dbg(adapter->netdev,
 			   "Half Duplex is not supported at 1000 Mbps\n");
-		/* fall through */
+		fallthrough;
 	case SPEED_1000 + FULL_DUPLEX:
 full_duplex_only:
 		netdev_dbg(adapter->netdev,

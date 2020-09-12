@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2014, Michael Ellerman, IBM Corp.
- * Licensed under GPLv2.
  */
 
 #define _GNU_SOURCE
@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <string.h>
 #include <sys/prctl.h>
+
+#include <asm/cputable.h>
 
 #include "event.h"
 #include "lib.h"
@@ -23,12 +25,9 @@
 static int per_event_excludes(void)
 {
 	struct event *e, events[4];
-	char *platform;
 	int i;
 
-	platform = (char *)get_auxv_entry(AT_BASE_PLATFORM);
-	FAIL_IF(!platform);
-	SKIP_IF(strcmp(platform, "power8") != 0);
+	SKIP_IF(!have_hwcap2(PPC_FEATURE2_ARCH_2_07));
 
 	/*
 	 * We need to create the events disabled, otherwise the running/enabled
